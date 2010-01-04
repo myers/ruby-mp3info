@@ -161,7 +161,7 @@ class Mp3Info
 
   # Test the presence of an id3v1 tag in file +filename+
   def self.hastag1?(filename)
-    File.open(filename,"rb") { |f|
+    open(filename,"rb") { |f|
       f.seek(-TAG1_SIZE, File::SEEK_END)
       f.read(3) == "TAG"
     }
@@ -169,7 +169,7 @@ class Mp3Info
 
   # Test the presence of an id3v2 tag in file +filename+
   def self.hastag2?(filename)
-    File.open(filename,"rb") { |f|
+    open(filename,"rb") { |f|
       f.read(3) == "ID3"
     }
   end
@@ -177,8 +177,8 @@ class Mp3Info
   # Remove id3v1 tag from +filename+
   def self.removetag1(filename)
     if self.hastag1?(filename)
-      newsize = File.size(filename) - TAG1_SIZE
-      File.open(filename, "rb+") { |f| f.truncate(newsize) }
+      newsize = file_size(filename) - TAG1_SIZE
+      open(filename, "rb+") { |f| f.truncate(newsize) }
     end
   end
   
@@ -190,9 +190,12 @@ class Mp3Info
   end
 
   # Instantiate Mp3Info object with name +filename+.
-  # options hash is used for ID3v2#new. 
-  # You can specify :parse_tags => false to disable the processing 
-  # of the tags (read and write).
+  # options hash is used for ID3v2#new and for controlling what underlying 
+  # file is used.
+  # You can specify
+  #   :parse_tags => false to disable the processing of the tags (read and
+  #                  write).
+  #   :input_file => <IO Object> to set the underlying file used for reading.
   def initialize(filename, options = {})
     warn("#{self.class}::new() does not take block; use #{self.class}::open() instead") if block_given?
     @filename = filename
@@ -200,17 +203,18 @@ class Mp3Info
     if @tag_parsing_enabled == nil
       @tag_parsing_enabled = true
     end
+    @input_file = options.delete(:input_file)
     @id3v2_options = options
     reload
   end
 
   # reload (or load for the first time) the file from disk
   def reload
-    raise(Mp3InfoError, "empty file") unless File.size?(@filename)
+    raise(Mp3InfoError, "empty file") unless file_size(@filename) > 0
 
     @header = {}
     
-    @file = File.new(filename, "rb")
+    @file = open(filename, "rb")
     @file.extend(Mp3FileMethods)
     @tag1 = @tag = @tag1_orig = @tag_orig = {}
     @tag1.extend(HashKeys)
@@ -305,7 +309,7 @@ class Mp3Info
         @vbr = true
       else
         # for cbr, calculate duration with the given bitrate
-        stream_size = @file.stat.size - (hastag1? ? TAG1_SIZE : 0) - (@tag2.io_position || 0)
+        stream_size = file_size(@file) - (hastag1? ? TAG1_SIZE : 0) - (@tag2.io_position || 0)
         @length = ((stream_size << 3)/1000.0)/@bitrate
         # read the first 100 frames and decide if the mp3 is vbr and needs full scan
         begin
@@ -318,7 +322,7 @@ class Mp3Info
         end
       end
     ensure
-      @file.close
+      close_file(@file)
     end
   end
 
@@ -376,7 +380,7 @@ class Mp3Info
   # [position_in_the_file, length_of_the_data]
   def audio_content
     pos = 0
-    length = File.size(@filename)
+    length = file_size(@filename)
     if hastag1?
       length -= TAG1_SIZE
     end
@@ -420,9 +424,9 @@ class Mp3Info
       raise(Mp3InfoError, "file is not writable") unless File.writable?(@filename)
       #@tag1_orig.update(@tag1)
       @tag1_orig = @tag1.dup
-      File.open(@filename, 'rb+') do |file|
+      open(@filename, 'rb+') do |file|
         if @tag1_orig.empty?
-          newsize = file.stat.size - TAG1_SIZE
+          newsize = file_size(file) - TAG1_SIZE
           file.truncate(newsize)
         else
           file.seek(-TAG1_SIZE, File::SEEK_END)
@@ -451,7 +455,7 @@ class Mp3Info
       puts "@tag2 has changed" if $DEBUG
       raise(Mp3InfoError, "file is not writable") unless File.writable?(@filename)
       tempfile_name = nil
-      File.open(@filename, 'rb+') do |file|
+      open(@filename, 'rb+') do |file|
         #if tag2 already exists, seek to end of it
         if @tag2.parsed?
           file.seek(@tag2.io_position)
@@ -464,7 +468,7 @@ class Mp3Info
   #        @file.seek(tag2_len, IO::SEEK_CUR)
   #      end
         tempfile_name = @filename + ".tmp"
-        File.open(tempfile_name, "wb") do |tempfile|
+        open(tempfile_name, "wb") do |tempfile|
           unless @tag2.empty?
             tempfile.write(@tag2.to_bin)
           end
@@ -499,7 +503,7 @@ class Mp3Info
   # counter, or whatever you like ;) +frame+ is a hash with the following keys:
   # :layer, :bitrate, :samplerate, :mpeg_version, :padding and :size (in bytes)
   def each_frame
-    File.open(@filename, 'rb') do |file|
+    open(@filename, 'rb') do |file|
       file.seek(@first_frame_pos, File::SEEK_SET)
       loop do
         head = file.read(4).unpack("N").first
@@ -548,7 +552,7 @@ private
 
   ### parses the id3 tags of the currently open @file
   def parse_tags
-    return if @file.stat.size < TAG1_SIZE  # file is too small
+    return if file_size(@file) < TAG1_SIZE  # file is too small
     @tag1_parsed = false
     @file.seek(0)
     f3 = @file.read(3)
@@ -605,7 +609,7 @@ private
     # It should be at the end of the id3v2 tag or the zero padding if there
     #   is a id3v2 tag.
     #dummyproof = @file.stat.size - @file.pos => WAS TOO MUCH
-    dummyproof = [ @file.stat.size - @file.pos, 2000000 ].min
+    dummyproof = [ file_size(@file) - @file.pos, 2000000 ].min
     dummyproof.times do |i|
       if @file.getbyte == 0xff
         data = @file.read(3)
@@ -647,6 +651,38 @@ private
     b.downto(a) { |i| t += t + number[i] }
     t
   end
+
+  # Common open function for files and other IO objects such as StringIO
+  # Same signature as File#open
+  def open(filename,*args, &block)
+    f = @input_file || File.open(filename, *args)
+    begin
+      f.rewind
+      return block.call(f) if block_given?
+    rescue
+      raise
+    ensure
+      close_file(f) if block_given?
+    end
+    f
+  end
+  # Common close method. Only closes Files, for other IO objects rewinds.
+  def close_file(file)
+    if file.kind_of?(File)
+      file.close unless file.closed?
+    else
+      file.rewind
+    end
+  end
+
+  # Method to allow common interface for getting the file size from
+  # File and other IO objects which implement the size method.
+  def file_size(file)
+    return File.size(filename) if file.kind_of?(String)
+    return file.size if file.respond_to?(:size)
+    return file.stat.size
+  end
+
 end
 
 if $0 == __FILE__
