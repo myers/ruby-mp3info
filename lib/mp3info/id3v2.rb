@@ -328,7 +328,7 @@ class ID3v2 < DelegateClass(Hash)
 	encoding, lang, str = raw_value.unpack("ca3a*") 
 	out = raw_value.split(0.chr).last
       when /^T/
-	encoding = raw_value.getbyte(0) # language encoding (see TEXT_ENCODINGS constant)   
+	encoding = raw_value.getbyte(0) # language encoding (see TEXT_ENCODINGS constant)
 	out = raw_value[1..-1] 
 	# we need to convert the string in order to match
 	# the requested encoding
@@ -345,7 +345,11 @@ class ID3v2 < DelegateClass(Hash)
         return raw_value
     end
   end
-
+  
+  def valid_frame_name?(name)
+    /[0-9A-Z]{4}/.match(name) != nil
+  end
+  
   ### reads id3 ver 2.3.x/2.4.x frames and adds the contents to @tag2 hash
   ### NOTE: the id3v2 header does not take padding zero's into consideration
   def read_id3v2_3_frames
@@ -356,8 +360,25 @@ class ID3v2 < DelegateClass(Hash)
 	seek_to_v2_end
         break
       else               
+        raise ID3v2Error, "invalid frame name: #{name.inspect}" if not valid_frame_name?(name)
 	if @version_maj == 4
-	  size = @io.get_syncsafe
+	  # HACK to fix bug from APIC frames written by iTunes
+	  old_pos = @io.pos
+	  # END HACK
+
+  	  size = @io.get_syncsafe
+
+	  # HACK to fix bug from APIC frames written by iTunes
+	  if name == 'APIC'
+	    @io.seek(size, IO::SEEK_CUR)
+	    possible_frame_name = @io.read(4)
+	    @io.seek(old_pos, IO::SEEK_SET)
+	    if not valid_frame_name?(possible_frame_name)
+	      puts "iTunes APIC hack used" if $DEBUG
+	      size = @io.get32bits
+	    end
+	  end
+	  # END HACK
 	else
 	  size = @io.get32bits
 	end
